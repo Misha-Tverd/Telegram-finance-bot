@@ -1,0 +1,4 @@
+Python 
+python-telegram-bot or aiogram
+pandas
+python-dotenv
