@@ -1,4 +1,3 @@
-Python 
-python-telegram-bot or aiogram
+aiogram>=3,<4
 pandas
 python-dotenv
