@@ -2,6 +2,8 @@ import asyncio
 import logging
 import re
 import sqlite3
+import os
+from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
 
@@ -16,8 +18,9 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
+load_dotenv(Path(__file__).with_name(".env"))
+API_TOKEN = os.environ["BOT_TOKEN"]
 
-API_TOKEN = "8517651425:AAEKUffGx0dmj73YLOwEiFcqnrdOofpVwPU"
 DB_PATH = Path(__file__).with_name("finance.db")
 
 USER_MAP = {
