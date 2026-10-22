@@ -2,3 +2,4 @@
 venv/
 .venv/
 bot/finance.db
+__pycache__/

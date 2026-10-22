@@ -135,9 +135,6 @@ class FinanceDB:
         self.refresh_current_totals()
         return cur.lastrowid
 
-    def get_last_id(self):
-        return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
     def delete_entry(self, entry_id):
         with self.conn:
             entry = self.conn.execute(
@@ -385,7 +382,8 @@ class FinanceStates(StatesGroup):
 
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
     name = USER_MAP.get(message.from_user.id, "Користувачу")
     await message.answer(f"Привіт, {name}!", reply_markup=UI.main_menu())
 
@@ -407,8 +405,14 @@ async def init_trans(message: types.Message, state: FSMContext):
 
 @dp.message(FinanceStates.choosing_cat)
 async def process_cat(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    valid = EXPENSE_CATS if data["mode"] == "expense" else INCOME_CATS
+    if message.text not in valid:
+        return await message.answer(
+            "Оберіть категорію кнопкою нижче.", reply_markup=UI.cats_menu(valid)
+        )
     await state.update_data(cat=message.text)
-    await message.answer("Введіть суму:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("Введіть суму:", reply_markup=UI.cats_menu([]))
     await state.set_state(FinanceStates.entering_amount)
 
 
