@@ -49,7 +49,6 @@ INCOME_CATS = [
     "🎁 Премія",
     "💳 Кешбек",
     "📈 Відсотки",
-    "🪙 Копійки",
     "📦 Продаж",
     "🧧 Подарунок",
 ]
@@ -71,6 +70,7 @@ class FinanceDB:
                     category TEXT,
                     sub TEXT,
                     amount REAL,
+                    amount_to REAL,
                     currency TEXT,
                     wallet TEXT,
                     wallet_to TEXT,
@@ -120,18 +120,17 @@ class FinanceDB:
     def add_entry(self, user_id, t_type, cat, sub, amount, curr="UAH"):
         user_name = USER_MAP.get(user_id, "Гість")
         date = datetime.now().strftime("%Y-%m-%d")
-        wallet = "COINS" if cat == "🪙 Копійки" else curr
         with self.conn:
             cur = self.conn.execute(
                 """INSERT INTO journal
                    (user_name, type, category, sub, amount, currency, wallet, date)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_name, t_type, cat, sub, amount, curr, wallet, date),
+                (user_name, t_type, cat, sub, amount, curr, curr, date),
             )
             mod = 1 if t_type == "income" else -1
             self.conn.execute(
                 "UPDATE balances SET value = value + ? WHERE name = ?",
-                (amount * mod, wallet),
+                (amount * mod, curr),
             )
         self.refresh_current_totals()
         return cur.lastrowid
@@ -155,32 +154,40 @@ class FinanceDB:
             if entry["wallet_to"]:
                 self.conn.execute(
                     "UPDATE balances SET value = value - ? WHERE name = ?",
-                    (entry["amount"], entry["wallet_to"]),
+                    (entry["amount_to"], entry["wallet_to"]),
                 )
             self.conn.execute("DELETE FROM journal WHERE id = ?", (entry_id,))
         self.refresh_current_totals()
         return True
 
-    def save_ten_percent(self, user_id, original_amount):
-        savings_amount = round(original_amount * 0.1, 2)
+    def transfer(self, user_id, from_wallet, to_wallet, amount, label, amount_to=None):
+        if amount_to is None:
+            amount_to = amount
         user_name = USER_MAP.get(user_id, "Гість")
         date = datetime.now().strftime("%Y-%m-%d")
         with self.conn:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """INSERT INTO journal
-                   (user_name, type, category, sub, amount, currency, wallet, wallet_to, date)
-                   VALUES (?, 'transfer', '🏦 Заощадження', 'Авто 10%', ?, 'UAH', 'UAH', 'SAVINGS', ?)""",
-                (user_name, savings_amount, date),
+                   (user_name, type, category, sub, amount, amount_to,
+                    currency, wallet, wallet_to, date)
+                   VALUES (?, 'transfer', ?, ?, ?, ?, 'UAH', ?, ?, ?)""",
+                (user_name, label, "Переказ", amount, amount_to,
+                 from_wallet, to_wallet, date),
             )
             self.conn.execute(
-                "UPDATE balances SET value = value - ? WHERE name = 'UAH'",
-                (savings_amount,),
+                "UPDATE balances SET value = value - ? WHERE name = ?",
+                (amount, from_wallet),
             )
             self.conn.execute(
-                "UPDATE balances SET value = value + ? WHERE name = 'SAVINGS'",
-                (savings_amount,),
+                "UPDATE balances SET value = value + ? WHERE name = ?",
+                (amount_to, to_wallet),
             )
         self.refresh_current_totals()
+        return cur.lastrowid
+
+    def save_ten_percent(self, user_id, original_amount):
+        savings_amount = round(original_amount * 0.1, 2)
+        self.transfer(user_id, "UAH", "SAVINGS", savings_amount, "🏦 Заощадження")
         return savings_amount
 
     def set_month_plan(self, month, category, planned_amount):
@@ -326,7 +333,8 @@ class UI:
                     KeyboardButton(text="🗓 Витрати на місяць"),
                     KeyboardButton(text="📊 Статистика"),
                 ],
-                [KeyboardButton(text="🏦 Баланс"), KeyboardButton(text="🔍 Пошук/Видалити")],
+                [KeyboardButton(text="🏦 Баланс"), KeyboardButton(text="💱 Обмін")],
+                [KeyboardButton(text="🔍 Пошук/Видалити")],
             ],
             resize_keyboard=True,
             is_persistent=True,
@@ -350,6 +358,17 @@ class UI:
             resize_keyboard=True,
         )
 
+    @staticmethod
+    def exchange_menu():
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="💵 В долари"), KeyboardButton(text="💶 В євро")],
+                [KeyboardButton(text="🪙 В копійки")],
+                [KeyboardButton(text="🔙 Назад")],
+            ],
+            resize_keyboard=True,
+        )
+
 
 db = FinanceDB()
 bot = Bot(token=API_TOKEN)
@@ -361,6 +380,8 @@ class FinanceStates(StatesGroup):
     entering_amount = State()
     searching_date = State()
     entering_month_plan = State()
+    exchange_from_amount = State()
+    exchange_to_amount = State()
 
 
 @dp.message(Command("start"))
@@ -531,6 +552,79 @@ async def show_balance(message: types.Message):
     for balance in balances:
         report += f"{icons.get(balance['name'], '💰')} {balance['name']}: {balance['value']:.2f}\n"
     await message.answer(report, parse_mode="Markdown")
+
+
+@dp.message(F.text == "💱 Обмін")
+async def exchange_menu_show(message: types.Message):
+    await message.answer("Оберіть напрямок:", reply_markup=UI.exchange_menu())
+
+
+@dp.message(F.text.in_(["💵 В долари", "💶 В євро", "🪙 В копійки"]))
+async def exchange_init(message: types.Message, state: FSMContext):
+    targets = {
+        "💵 В долари": ("USD", "💵 Обмін UAH→USD"),
+        "💶 В євро": ("EUR", "💶 Обмін UAH→EUR"),
+        "🪙 В копійки": ("COINS", "🪙 Копійки"),
+    }
+    to_wallet, label = targets[message.text]
+    await state.update_data(to_wallet=to_wallet, label=label)
+    await message.answer("Скільки гривень списати?", reply_markup=UI.cats_menu([]))
+    await state.set_state(FinanceStates.exchange_from_amount)
+
+
+@dp.message(FinanceStates.exchange_from_amount)
+async def exchange_from_amount(message: types.Message, state: FSMContext):
+    match = re.search(r"(\d+(?:[.,]\d+)?)", message.text)
+    if not match:
+        return await message.answer("Введіть число.")
+    amount = float(match.group(1).replace(",", "."))
+    data = await state.get_data()
+    if data["to_wallet"] == "COINS":
+        last_id = db.transfer(
+            message.from_user.id, "UAH", "COINS", amount, data["label"]
+        )
+        await state.clear()
+        return await send_transfer_result(
+            message, f"🪙 Переказано {amount:.2f} грн у копійки.", last_id
+        )
+    await state.update_data(from_amount=amount)
+    await message.answer("Скільки отримали?", reply_markup=UI.cats_menu([]))
+    await state.set_state(FinanceStates.exchange_to_amount)
+
+
+@dp.message(FinanceStates.exchange_to_amount)
+async def exchange_to_amount(message: types.Message, state: FSMContext):
+    match = re.search(r"(\d+(?:[.,]\d+)?)", message.text)
+    if not match:
+        return await message.answer("Введіть число.")
+    amount_to = float(match.group(1).replace(",", "."))
+    data = await state.get_data()
+    last_id = db.transfer(
+        message.from_user.id,
+        "UAH",
+        data["to_wallet"],
+        data["from_amount"],
+        data["label"],
+        amount_to,
+    )
+    await state.clear()
+    await send_transfer_result(
+        message,
+        f"💱 {data['from_amount']:.2f} UAH → {amount_to:.2f} {data['to_wallet']}",
+        last_id,
+    )
+
+
+async def send_transfer_result(message: types.Message, text: str, last_id: int):
+    await message.answer(text, reply_markup=UI.main_menu())
+    await message.answer(
+        "Дії:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Скасувати ↩️", callback_data=f"del_{last_id}")]
+            ]
+        ),
+    )
 
 
 @dp.message(F.text == "🔍 Пошук/Видалити")
