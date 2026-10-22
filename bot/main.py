@@ -16,6 +16,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    BotCommand,
 )
 
 load_dotenv(Path(__file__).with_name(".env"))
@@ -71,6 +72,8 @@ class FinanceDB:
                     sub TEXT,
                     amount REAL,
                     currency TEXT,
+                    wallet TEXT,
+                    wallet_to TEXT,
                     date TEXT
                 )"""
             )
@@ -117,21 +120,21 @@ class FinanceDB:
     def add_entry(self, user_id, t_type, cat, sub, amount, curr="UAH"):
         user_name = USER_MAP.get(user_id, "Гість")
         date = datetime.now().strftime("%Y-%m-%d")
+        wallet = "COINS" if cat == "🪙 Копійки" else curr
         with self.conn:
-            self.conn.execute(
+            cur = self.conn.execute(
                 """INSERT INTO journal
-                   (user_name, type, category, sub, amount, currency, date)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (user_name, t_type, cat, sub, amount, curr, date),
+                   (user_name, type, category, sub, amount, currency, wallet, date)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_name, t_type, cat, sub, amount, curr, wallet, date),
             )
             mod = 1 if t_type == "income" else -1
-            target_wallet = "COINS" if cat == "🪙 Копійки" else curr
             self.conn.execute(
                 "UPDATE balances SET value = value + ? WHERE name = ?",
-                (amount * mod, target_wallet),
+                (amount * mod, wallet),
             )
         self.refresh_current_totals()
-        return self.get_last_id()
+        return cur.lastrowid
 
     def get_last_id(self):
         return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -147,8 +150,13 @@ class FinanceDB:
             mod = -1 if entry["type"] == "income" else 1
             self.conn.execute(
                 "UPDATE balances SET value = value + ? WHERE name = ?",
-                (entry["amount"] * mod, entry["currency"]),
+                (entry["amount"] * mod, entry["wallet"]),
             )
+            if entry["wallet_to"]:
+                self.conn.execute(
+                    "UPDATE balances SET value = value - ? WHERE name = ?",
+                    (entry["amount"], entry["wallet_to"]),
+                )
             self.conn.execute("DELETE FROM journal WHERE id = ?", (entry_id,))
         self.refresh_current_totals()
         return True
@@ -160,8 +168,8 @@ class FinanceDB:
         with self.conn:
             self.conn.execute(
                 """INSERT INTO journal
-                   (user_name, type, category, sub, amount, currency, date)
-                   VALUES (?, 'expense', '🏦 Заощадження', 'Авто 10%', ?, 'UAH', ?)""",
+                   (user_name, type, category, sub, amount, currency, wallet, wallet_to, date)
+                   VALUES (?, 'transfer', '🏦 Заощадження', 'Авто 10%', ?, 'UAH', 'UAH', 'SAVINGS', ?)""",
                 (user_name, savings_amount, date),
             )
             self.conn.execute(
@@ -563,6 +571,9 @@ async def delete_cb(callback: types.CallbackQuery):
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Головне меню"),
+    ])
     await dp.start_polling(bot)
 
 
